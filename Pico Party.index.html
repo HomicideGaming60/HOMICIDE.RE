@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>PICO PRO - 10 LEVELS</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+        body { margin: 0; background: #000; color: white; font-family: 'Press Start 2P', cursive; overflow: hidden; touch-action: none; }
+        .screen { display: none; width: 100vw; height: 100vh; flex-direction: column; align-items: center; justify-content: center; position: absolute; top:0; left:0; z-index: 100; }
+        #menu-screen { display: flex; background: #1e272e; }
+        .panel { background: #000; padding: 20px; border: 4px solid #fff; text-align: center; width: 80%; max-width: 320px; }
+        input { padding: 12px; font-family: inherit; margin: 10px 0; border: 2px solid #fff; background: #222; color: #fff; width: 100%; box-sizing: border-box; font-size: 10px; }
+        .btn { padding: 12px; margin: 5px 0; font-family: inherit; cursor: pointer; border: none; width: 100%; font-size: 10px; }
+        .btn-host { background: #ff4757; color: white; }
+        .btn-join { background: #2ed573; color: white; }
+        .opt-row { display: flex; gap: 5px; margin-bottom: 10px; }
+        .opt { background: #444; color: white; flex: 1; border: 2px solid transparent; padding: 10px; font-size: 8px; }
+        .selected { border-color: #ffa502; background: #666; }
+        #game-container { position: relative; width: 100%; height: 100%; display: none; }
+        canvas { display: block; width: 100%; height: 100%; }
+        #controls { position: absolute; bottom: 20px; width: 100%; display: flex; justify-content: space-between; padding: 0 20px; box-sizing: border-box; pointer-events: none; }
+        .ctrl { width: 60px; height: 60px; background: rgba(255,255,255,0.2); border: 2px solid #fff; border-radius: 10px; pointer-events: auto; display: flex; align-items: center; justify-content: center; font-size: 18px; color: white; user-select: none; }
+    </style>
+</head>
+<body>
+
+    <div id="menu-screen" class="screen">
+        <div class="panel">
+            <h1 style="font-size: 14px; color: #ffa502;">PICO PRO</h1>
+            <input type="text" id="room-id" placeholder="ROOM NAME">
+            <div class="opt-row">
+                <button class="opt selected" id="p2" onclick="setP(2)">2P</button>
+                <button class="opt" id="p3" onclick="setP(3)">3P</button>
+                <button class="opt" id="p4" onclick="setP(4)">4P</button>
+            </div>
+            <button class="btn btn-host" onclick="setup('host')">HOST ROOM</button>
+            <button class="btn btn-join" onclick="setup('join')">JOIN ROOM</button>
+        </div>
+    </div>
+
+    <div id="lobby-screen" class="screen" style="background: rgba(0,0,0,0.9);">
+        <div class="panel">
+            <h2 id="l-stat" style="font-size: 12px;">WAITING...</h2>
+            <p id="p-list" style="font-size: 8px;">Connecting to Peer...</p>
+        </div>
+    </div>
+
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="controls">
+            <div style="display:flex; gap:10px;">
+                <div class="ctrl" id="l">◀</div>
+                <div class="ctrl" id="r">▶</div>
+            </div>
+            <div class="ctrl" id="j">▲</div>
+        </div>
+    </div>
+
+    <script>
+        const COLORS = ['#ff4757', '#2e86de', '#2ed573', '#ffa502'];
+        let role, peer, conn, connections = [], targetP = 2;
+        let myIdx = 0, state = { players: [], hasKey: false, level: 1, active: false }, inputs = { l:0, r:0, j:0 };
+        let camX = 0;
+
+        const levelData = [
+            { k: 600, d: 900, f: 1200, bg: '#4b6584', p: [] },
+            { k: 800, d: 1100, f: 1400, bg: '#596275', p: [{x:400, y:350, w:150, h:20}] },
+            { k: 1200, d: 1500, f: 1800, bg: '#303952', p: [{x:500, y:300, w:100, h:20}, {x:800, y:250, w:100, h:20}] },
+            { k: 500, d: 1800, f: 2100, bg: '#1e272e', p: [{x:300, y:200, w:60, h:20}, {x:1200, y:300, w:200, h:20}] },
+            { k: 1000, d: 600, f: 2000, bg: '#2f3542', p: [{x:400, y:380, w:50, h:100}, {x:900, y:250, w:200, h:20}] },
+            { k: 1500, d: 1900, f: 2400, bg: '#574b90', p: [{x:200, y:300, w:80, h:20}, {x:600, y:200, w:80, h:20}, {x:1000, y:150, w:80, h:20}] },
+            { k: 700, d: 2200, f: 2600, bg: '#3d3d3d', p: [{x:1000, y:350, w:500, h:20}] },
+            { k: 2000, d: 1200, f: 2800, bg: '#2c3e50', p: [{x:1800, y:200, w:300, h:20}] },
+            { k: 100, d: 2500, f: 3000, bg: '#000000', p: [{x:500, y:150, w:40, h:20}, {x:1500, y:150, w:40, h:20}] },
+            { k: 2800, d: 500, f: 3500, bg: '#ff4757', p: [{x:400, y:300, w:40, h:10}, {x:1000, y:200, w:40, h:10}, {x:2000, y:100, w:100, h:10}] }
+        ];
+
+        function setP(n) { targetP = n; document.querySelectorAll('.opt').forEach(b => b.classList.remove('selected')); document.getElementById('p'+n).classList.add('selected'); }
+
+        function setup(type) {
+            role = type; const rId = document.getElementById('room-id').value.trim().toLowerCase() || "pico";
+            document.getElementById('menu-screen').style.display = 'none';
+            document.getElementById('lobby-screen').style.display = 'flex';
+            if(role === 'host') {
+                peer = new Peer("pico_pro_v10_" + rId);
+                state.players[0] = { x:100, y:400, vx:0, vy:0, w:45, h:45, c:COLORS[0], g:false, f:1 };
+                peer.on('connection', c => {
+                    connections.push(c); const id = connections.length;
+                    state.players[id] = { x:100+id*50, y:400, vx:0, vy:0, w:45, h:45, c:COLORS[id], g:false, f:1 };
+                    c.on('open', () => c.send({t:'init', i:id, target:targetP}));
+                    c.on('data', d => { if(d.t==='in') handleIn(d.i, d.input); });
+                    updLobby();
+                });
+                setInterval(loopH, 16);
+            } else {
+                peer = new Peer();
+                peer.on('open', () => {
+                    conn = peer.connect("pico_pro_v10_" + rId);
+                    conn.on('data', d => {
+                        if(d.t==='init') { myIdx = d.i; targetP = d.target; }
+                        if(d.t==='upd') { state = d.s; if(state.active) showG(); }
+                        updLobby();
+                    });
+                });
+                setInterval(loopC, 16);
+            }
+        }
+
+        function updLobby() {
+            const count = role === 'host' ? connections.length+1 : state.players.length;
+            document.getElementById('p-list').innerText = `${count} / ${targetP} READY`;
+            if(role==='host' && count >= targetP && !state.active) { state.active = true; showG(); }
+        }
+
+        function showG() { document.getElementById('lobby-screen').style.display = 'none'; document.getElementById('game-container').style.display = 'block'; }
+
+        function handleIn(i, input) {
+            const p = state.players[i]; if(!p) return;
+            p.vx = (input.r - input.l) * 7;
+            if(p.vx !== 0) p.f = p.vx > 0 ? 1 : -1;
+            if(input.j && p.g) { p.vy = -18; p.g = false; }
+        }
+
+        function loopH() {
+            if(!state.active) return; handleIn(0, inputs);
+            const cur = levelData[state.level-1];
+            state.players.forEach((p, i) => {
+                p.vy += 0.9; p.x += p.vx; p.y += p.vy; p.g = false;
+                if(p.y > 450) { p.y = 450; p.vy = 0; p.g = true; }
+                cur.p.forEach(plat => {
+                    if(p.vy > 0 && p.x+p.w > plat.x && p.x < plat.x+plat.w && p.y+p.h > plat.y && p.y+p.h < plat.y+15) { p.y = plat.y - p.h; p.vy = 0; p.g = true; }
+                });
+                if(!state.hasKey && Math.abs(p.x-cur.k)<50 && Math.abs(p.y-350)<100) state.hasKey = true;
+                if(!state.hasKey && p.x+p.w > cur.d && p.x < cur.d+40) p.x = cur.d - p.w;
+                state.players.forEach((p2, j) => {
+                    if(i===j) return;
+                    if(p.vy > 0 && p.x+p.w > p2.x && p.x < p2.x+p2.w && p.y+p.h > p2.y && p.y+p.h < p2.y+15) { p.y = p2.y-p.h; p.vy = 0; p.g = true; }
+                });
+            });
+            if(state.players.every(p => p.x > cur.f - 60)) {
+                if(state.level < 10) { state.level++; state.hasKey = false; state.players.forEach(pl => { pl.x = 100; pl.y = 400; }); }
+            }
+            connections.forEach(c => c.send({t:'upd', s:state}));
+            draw();
+        }
+
+        function loopC() { if(conn && conn.open) conn.send({t:'in', i:myIdx, input:inputs}); draw(); }
+
+        const cvs = document.getElementById('gameCanvas'), ctx = cvs.getContext('2d');
+
+        function draw() {
+            cvs.width = window.innerWidth; cvs.height = window.innerHeight;
+            if(!state.active) return; const cur = levelData[state.level-1];
+            let sX = 0; state.players.forEach(p => sX += p.x);
+            let tX = (sX / state.players.length) - cvs.width/2;
+            camX += (tX - camX) * 0.1;
+            ctx.save(); ctx.translate(-camX, 0);
+            ctx.fillStyle = cur.bg; ctx.fillRect(camX, 0, cvs.width, cvs.height);
+            ctx.fillStyle = '#1e272e'; ctx.fillRect(camX - 200, 495, cvs.width + 5000, 300);
+            cur.p.forEach(p => { ctx.fillStyle = "#fff"; ctx.fillRect(p.x, p.y, p.w, p.h); });
+            ctx.fillStyle = state.hasKey ? '#2ed573' : '#ff4757'; ctx.fillRect(cur.d, 300, 40, 200);
+            if(!state.hasKey) { ctx.fillStyle='#ffa502'; ctx.beginPath(); ctx.arc(cur.k, 350, 15, 0, 7); ctx.fill(); }
+            ctx.fillStyle = '#2ed573'; ctx.fillRect(cur.f, 300, 5, 200); ctx.fillRect(cur.f, 300, 40, 30);
+            state.players.forEach(p => {
+                ctx.fillStyle = p.c; ctx.fillRect(p.x, p.y, p.w, p.h);
+                ctx.fillRect(p.x, p.y-10, 14, 12); ctx.fillRect(p.x+p.w-14, p.y-10, 14, 12);
+                ctx.fillStyle = "white"; let ex = p.f === 1 ? p.x + 22 : p.x + 5;
+                ctx.fillRect(ex, p.y + 12, 10, 10); ctx.fillRect(ex + 15, p.y + 12, 10, 10);
+                ctx.fillStyle = "black"; ctx.fillRect(ex+(p.f==1?6:0), p.y+15, 4, 4); ctx.fillRect(ex+15+(p.f==1?6:0), p.y+15, 4, 4);
+            });
+            ctx.restore();
+            ctx.fillStyle = "white"; ctx.font = "10px 'Press Start 2P'"; ctx.fillText("LVL " + state.level, 20, 30);
+        }
+
+        function bnd(id, k, v) {
+            const e = document.getElementById(id);
+            e.addEventListener('touchstart', (ev) => { ev.preventDefault(); inputs[k] = v; });
+            e.addEventListener('touchend', (ev) => { ev.preventDefault(); inputs[k] = 0; });
+        }
+        bnd('l', 'l', 1); bnd('r', 'r', 1); bnd('j', 'j', 1);
+        window.onblur = () => { inputs.l = 0; inputs.r = 0; inputs.j = 0; };
+    </script>
+</body>
+</html>
